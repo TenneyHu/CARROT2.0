@@ -1,2 +1,3 @@
 data/all_*
 output
+__pycache__/
