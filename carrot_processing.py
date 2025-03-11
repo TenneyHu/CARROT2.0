@@ -35,7 +35,7 @@ def generate_recipe_adaption_query():
         if item['Pais'] != 'ESP' and item['Pais'] != None:
             recipes.append("Nombre: " + nombre + '\tIngredientes: ' + ingredientes + "\tPasos: " + pasos)
 
-    with open("data/recipe_adaption_queries.txt", "w", encoding="utf-8") as f:
+    with open("data/all_index.txt", "w", encoding="utf-8") as f:
         for recipe in recipes:
             f.write(recipe + "\n")
 

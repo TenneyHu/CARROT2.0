@@ -8,15 +8,20 @@ from carrot_processing import load_data, load_recipe_adaption_query, recipe_spli
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
 
+def display_prompt_dict(prompts_dict):
+    for k, p in prompts_dict.items():
+        print("Prompt Key: ", k)
+        print("Text: ", p.get_template())
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Recipe RAG System')
-    parser.add_argument('--emb_model', type=str, default='hiiamsid/sentence_similarity_spanish_es',
+    parser.add_argument('--emb_model', type=str, default='sentence-transformers/distiluse-base-multilingual-cased-v1',
                         help='Name of the embedding model to use')
     parser.add_argument('--llm', type=str, default='llama3.1',
                         help='Name of the llm to use')
     parser.add_argument('--index_dir', type=str, default='/data1/zjy/recipe_spanish_index/',
                         help='Directory to save/load the index')
-    parser.add_argument('--save_index', type=int, default=1,
+    parser.add_argument('--save_index', type=int, default=0,
                         help='switch of saving index to the disk')
     parser.add_argument('--debugging', type=int, default=1,
                         help='display rettrieve logs')
@@ -48,15 +53,20 @@ if __name__ == "__main__":
         llm=args.llm,
         switch_query_rewrite = args.query_rewrite,
         debugging = args.debugging,
-        k=10
+        k=4
     )
    
     for query in queries:
         title, content = recipe_split(query)
         transformed_queries = carrot_query_engine.query_processing(title, content)
         query_engine = carrot_query_engine.retrieve(transformed_queries)
+        
+        print (load_prompt(args.task))
         query_engine.update_prompts(load_prompt(args.task))
-        #response = query_engine.query(query)
-        #print("Response: ", response)
+        
+        #display_prompt_dict(query_engine.get_prompts())
+
+        response = query_engine.query(query)
+        print("Response: ", response)
     
     

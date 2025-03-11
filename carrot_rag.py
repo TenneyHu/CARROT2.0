@@ -13,7 +13,7 @@ def recipe_title_generate(recipe):
     response = ollama.chat(model="llama3.1", messages=[
         {"role": "system", "content": "Here is a recipe without title; please create a short Spanish title for the recipe."},
         {"role": "user", "content": f"The recipe is {recipe}"},
-        {"role": "user", "content": f" Please only output the recipe title, do not output any other content."}
+        {"role": "user", "content": f" Please only output the recipe title, Do not use quotation marks or include any explanations or additional content."}
     ])
 
     
@@ -24,7 +24,7 @@ def recipe_title_rewrite(ori_title):
     response = ollama.chat(model="llama3.1", messages=[
         {"role": "system", "content": "Please rewrite the title of this recipe to align with Spanish recipe naming conventions and dietary habits."},
         {"role": "user", "content": f"The recipe is {ori_title}"},
-        {"role": "user", "content": f" Please only output the recipe title, do not output any other content."}
+        {"role": "user", "content": f" Please only output the recipe title, Do not use quotation marks or include any explanations or additional content."}
     ])
     title = response["message"]["content"]
     return title
