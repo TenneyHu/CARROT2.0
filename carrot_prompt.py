@@ -24,14 +24,14 @@ recipe_cultural_adaption_template_str = (
 
 recipe_cultural_adaption_spansih_template_str = (
     "Convierte la siguiente receta en una receta española para que se adapte a la cultura española, sea coherente con el conocimiento culinario español y se alinee con el estilo de las recetas españolas y la disponibilidad de ingredientes.\n"
-    "A continuación se muestran algunas recetas españolas relevantes obtenidas mediante búsqueda, que pueden ser útiles para la tarea:\n"
+    "A continuación se muestran algunas recetas españolas relevantes recuperadas mediante búsqueda, que pueden ser útiles para la tarea:\n"
     "---------------------\n"
     "{context_str}\n"
     "---------------------\n"
-    "Dada la receta original {query_str}, utiliza estas recetas recuperadas para adaptarla a una receta española.\n"
+    "Dada la receta original {query_str}, utiliza las siguientes recetas recuperadas para adaptarla a una receta española.\n"
     "\n"
     "Instrucciones:\n"
-    "Busca recetas relevantes entre las recuperadas para usarlas como referencia. Si hay varias recetas muy relevantes, selecciona la que mejor se alinee con las preferencias culturales y normas de la cocina española.\n"
+    "Busca recetas relevantes entre las recuperadas para usarlas como referencia. Si hay varias recetas muy relevantes, selecciona la que mejor se alinee con las preferencias culturales y convenciones de la cocina española.\n"
     "La receta resultante debe estar completa, incluyendo ingredientes detallados e instrucciones paso a paso. Puedes guiarte por el estilo de las recetas españolas recuperadas.\n"
     "Da formato a tu respuesta exactamente de la siguiente manera:\n"
     "Nombre: [Título]\n"
