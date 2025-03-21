@@ -1,3 +1,6 @@
 data/all_*
 output
 __pycache__/
+test.py
+nohup.out
+.vscode*
