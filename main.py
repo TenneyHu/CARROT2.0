@@ -4,6 +4,7 @@ import logging
 from carrot_rag import CarrotRetriever, carrot_query_processing
 from carrot_prompt import load_prompt
 from carrot_processing import load_data, load_recipe_adaption_query, recipe_split
+from tqdm import tqdm
 from llama_index.llms.ollama import Ollama
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -26,6 +27,8 @@ def parse_args():
                         help='switch of saving index to the disk')
     parser.add_argument('--debugging', type=int, default=1,
                         help='display rettrieve logs')
+    parser.add_argument('--llm_generate', type=int, default=1,
+                        help='use llm to generate based on texts')
     parser.add_argument('--query_rewrite', type=int, default=1,
                         help='switch of rewriting')
     parser.add_argument('--reranking', type=int, default=1,
@@ -34,6 +37,8 @@ def parse_args():
                         help='The task you want to do')
     parser.add_argument('--input_file_dir', type=str, default="./data/recipe_adaption_demo.txt",
                         help='input file dir')
+    parser.add_argument('--k', type=int, default=5,
+                        help='retrieval cut off')
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -48,8 +53,8 @@ if __name__ == "__main__":
         full_document_maps=full_document_maps,
         debugging = args.debugging,
         reranking = args.reranking,
-        res_num_per_query=5,
-        final_res_num = 5
+        res_num_per_query = args.k,
+        final_res_num = args.k
     )
 
     #indexing the corpus
@@ -60,19 +65,25 @@ if __name__ == "__main__":
     #user query recipe 
     queries = load_recipe_adaption_query(args.input_file_dir)
     llm = Ollama(model=args.llm, request_timeout=300.0)
-    for query in queries:
+    res = []
+    for qid, query in enumerate(queries):
         title, content = recipe_split(query)
         transformed_queries = carrot_query_processing(title, content, args.debugging, args.query_rewrite)
         
         contexts = carrot_retriever.retrieve(transformed_queries)
-        contexts = "\n\n".join([n.node.get_content() for n in contexts])
- 
-        carrot_prompt = load_prompt(args.task)
-        response = llm.complete(
-            carrot_prompt.format(context_str=contexts, query_str=query)
-        )
+        for rank, doc in enumerate(contexts):
+            res.append("Retrieval" + "\t" + str(qid)+ "\t" + str(rank + 1) + "\t" + str(doc.score) + "\t" + doc.node.get_content().replace("\n", " "))
 
-        print (str(response))
-  
+        if args.llm_generate:
+            contexts = "\n\n".join([n.node.get_content() for n in contexts])
     
-    
+            carrot_prompt = load_prompt(args.task)
+            response = llm.complete(
+                carrot_prompt.format(context_str=contexts, query_str=query)
+            )
+
+            print (str(response))
+
+    with open("./res/retrieval_res","w") as f:
+        for line in res:
+            f.write(line + "\n")
