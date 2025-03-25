@@ -10,10 +10,11 @@ def load_data(filter_county=""):
         nombre = item['Nombre']
         ingredientes = item['Ingredientes']
         pasos = item['Pasos']
-
+        ingredientes = ingredientes.replace("\n"," ")
+        pasos = pasos.replace("\n"," ")
         if filter_county != "" and item['Pais'] == filter_county:
             recipe_titles.append(nombre)
-            recipes_map[nombre] = "Nombre: " + nombre + '\nIngredientes: ' + ingredientes + "\nPasos: " + pasos
+            recipes_map[nombre] = "Nombre: " + nombre + '\tIngredientes: ' + ingredientes + "\tPasos: " + pasos
     return recipe_titles, recipes_map
 
 def recipe_split(data):

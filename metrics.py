@@ -1,55 +1,250 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from collections import defaultdict
 from transformers import AutoModel
-import logging
-import sys
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
+from tqdm import tqdm
+import re
+from unidecode import unidecode
+import inflect
+import ast
+p = inflect.engine()
+def limpiar_especificaciones(ingredientes, palabras_eliminar):
+    ingredientes_limpios = []
+    for ingrediente in ingredientes:
+        for palabra in palabras_eliminar:
+            ingrediente = ingrediente.replace(palabra, "").strip()
+        ingredientes_limpios.append(ingrediente)
+    return ingredientes_limpios
+
+def remove_empty_strings(lst):
+    return [item for item in lst if item != '']
+
+def remove_text_in_parentheses(text):
+    # This regex matches any text between parentheses and the parentheses themselves
+    result = re.sub(r'\(.*?\)', '', text)
+    return result
+
+def remove_text_after_coma(text):
+    # remove text after coma
+    result = text.split(',')[0]   
+    return result
+
+def remove_punctuation(text):
+    # Remove punctuation using regex
+    return re.sub(r'[^\w\s]', '', text)
+
+def singularize_ingredient(ingredient):
+    # Split the ingredient into words
+    words = ingredient.split()
+    # Singularize each word if it is plural
+    singularized_words = [p.singular_noun(word) if p.singular_noun(word) else word for word in words]
+    # Join the words back into a single string
+    singularized_ingredient = ' '.join(singularized_words)
+    return singularized_ingredient
+
+def remove_everything_after(list_words, text):
+    for word in list_words:
+        if word in text:
+            text = text.split(word)[0]
+    return text
+
+# Función para limpiar cada línea del texto
+def limpiar_linea(linea,pattern):
+    return re.sub(pattern, '', linea, flags=re.IGNORECASE).strip()
+
+model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-es', trust_remote_code=True).to('cuda')
+
+def clean_ingredients(recipes, ai_generated=False):
+
+    remove_after_word = [' entre', ' al gusto', ' para', 'para ']
+    palabras_eliminar = ["mediana", "bastantes", "bastante", "rebanadas de", "pequeña", "trozos medianos", 
+                     "al gusto", "a gusto", "trozos de ", "trozo de ", "en trozos pequeños", ' ya ',
+                       " ()", "pequeño", "regulares", "lb. ", " suficiente"]
+    ingredient_list = []
+    for elem in recipes:
+
+        if ai_generated:
+            texto = (elem['mod'].split("Ingredientes")[1]).split("\n\n")[1].replace(" ", " ")
+            
+            texto = texto.lower() # lowercase
+            texto = texto.replace("¼", "1/4")
+            texto = texto.replace("½", "1/2")
+            texto = texto.replace("¾", "3/4")
+            texto = texto.replace("⅓", "1/3")
+            texto = texto.replace("Al gusto,", "")
+            texto = texto.replace("Al gusto:", "")
+            ingredientes = texto.split("* ")
+            ingredientes_principal = [i.split(',')[0] for i in ingredientes]
+            ingredientes_principal = [i.split('(')[0] for i in ingredientes_principal]
+
+        else:
+            if elem.strip().startswith("["):
+                try:
+                    ingredientes = ast.literal_eval(elem.strip())
+                    ingredientes = [ing.lower() for ing in ingredientes]
+                    ingredientes_principal = [remove_text_in_parentheses(ing) for ing in ingredientes]
+                    ingredientes_principal = [remove_text_after_coma(ing) for ing in ingredientes_principal]
+                    ingredientes_principal = [remove_everything_after(remove_after_word, ing) for ing in ingredientes_principal]
+                    ingredientes_principal = [ing.replace("¼", "1/4") for ing in ingredientes_principal]
+                    ingredientes_principal = [ing.replace("½", "1/2") for ing in ingredientes_principal]
+                    ingredientes_principal = [ing.replace("¾", "3/4") for ing in ingredientes_principal]
+                    ingredientes_principal = [ing.replace("⅓", "1/3") for ing in ingredientes_principal]
+                    ingredientes_principal = [ing.replace("cta.de,", "") for ing in ingredientes_principal]
+                    ingredientes_principal = [ing.replace("cinco:", "5") for ing in ingredientes_principal]
+                    ingredientes_principal = [ing.replace("azãºcar", "azúcar") for ing in ingredientes_principal]
+                except:
+                    continue
+            else:
+                texto = remove_text_in_parentheses(elem)
+                texto = remove_text_after_coma(texto)
+                texto = remove_everything_after(remove_after_word, texto)
+                texto = texto.lower()
+                texto = texto.replace("¼", "1/4")
+                texto = texto.replace("½", "1/2")
+                texto = texto.replace("¾", "3/4")
+                texto = texto.replace("⅓", "1/3")
+                texto = texto.replace("al gusto,", "")
+                texto = texto.replace("al gusto:", "")
+                texto = texto.replace("cta.de", "")
+                texto = texto.replace("cinco", "5")
+                texto = texto.replace("azãºcar", "azúcar")
+                ingredientes_principal = texto.split(',')
+
+        pattern = r'\b\d+\s*(?:\/\d+)?\s*(?:g|gramos|pieza|centímetro cúbico|cucharada sopera|cc|un kilo|tableta|pisca|piezas|paquete|paquetes|un kilo|tarro|loncha|cabeza|cabezas|lonchas|kilogramo|kilogramos|puñados|chorrito|botella|gr.|libra|ralladura|lámina|barra|paquete|bastante|caja|rama|puñado|manojo|bote|vaso|pellizco|unidad|chorro|vaso|lata|rama|postre|litro|litros|mililitros|barra|-|cucharada colmada|unidades|copa|un kilo|kilo|gr|kg|ml|cl|dl|l|cm|bolas|dientes|diente|pizca|cucharadas soperas|tiras|tajadas|cucharaditas|cucharadita|cucharadas|mix|cucharada|cc|cda|cdta)?(?:\s+(?!de\b)(?:taza|tazas))?\b\s*(?:de)?'
+
+        # print(ingredientes_principal, 'ingredientes principal')
+        # Aplicar la limpieza a cada línea y eliminar líneas vacías
+        lineas_limpias = []
+        lineas_limpias = [limpiar_linea(linea,pattern).lower() for linea in ingredientes_principal if linea.strip()]
+
+        # Eliminar la palabra "taza" o "tazas" si aparece al inicio de un elemento limpio
+        lineas_limpias_final = [re.sub(r'^(taza de|tazas de)\s+', '', linea, flags=re.IGNORECASE) for linea in lineas_limpias]
+
+        final_ingredients = []
+        for i in lineas_limpias_final:
+            if ' y ' in i:
+                two_ingredientes = i.split(' y ')
+                final_ingredients.append(two_ingredientes[0])
+                # final_ingredients.append(two_ingredientes[1])
+            elif 'o' in i:
+                two_ingredientes = i.split(' o ')
+                final_ingredients.append(two_ingredientes[0])
+            else:
+                final_ingredients.append(i)
+
+        res = limpiar_especificaciones(final_ingredients, palabras_eliminar)
+        res = [singularize_ingredient(ingredient).rstrip('.') for ingredient in res ]
+        res  = [limpiar_linea(linea,pattern).lower().rstrip('.') for linea in res]
+        res = remove_empty_strings(res)
+        res = limpiar_especificaciones(res, ['cc de ','. de ', '. ', '- ', 'c/n ', ' c/n', 'ajã\xade', 'ajã\xad ', 'ðÿ§…', ' %', 'taza ', 'centimetro cubico de ', 'c.c', 'una ', 'trozo de ', 'un kilo de ', ' en cuadradito', 'semilla de ', 'copita de '])
+        # unidecode
+        res= [unidecode(ing) for ing in res]
+        ingredient_list.extend(res)
+    return ingredient_list
 
 def load_evaluate_res(filepath, cutoff):
-    recipes = []
     scores = []
+    titles = []
+    qid_to_titles = defaultdict(list)
+    ingredients = []
     with open(filepath, "r") as file:
         for line in file:
-            pos = int(line.strip().split("\t")[2])
-            score =float(line.strip().split("\t")[3])
-            recipe = line.strip().split("\t")[4]
-            if pos <= cutoff:
-                scores.append(score)
-                recipes.append(recipe)
-    return scores,recipes
+            try:
+                parts = line.strip().split("\t")
+                qid = parts[1]
+                pos = int(parts[2])
+                score = float(parts[3])
+                title = parts[4].split(":")[1]
+                ingredient = parts[5].split(":")[1]
+                if pos <= cutoff:
+                    scores.append(score)
+                    titles.append(title)
+                    qid_to_titles[qid].append(title)
+                    ingredients.append(ingredient)
+            except (IndexError, ValueError):
+                continue
 
-def calc_semantic_diversity(model, texts):
-    embeddings = model.encode(texts)
-    similarity_matrix = cosine_similarity(embeddings)
-    upper_triangular_values = similarity_matrix[np.triu_indices(len(texts), k=1)]
-    mean_similarity = np.mean(upper_triangular_values)
+    return scores,  qid_to_titles, ingredients
+
+
+def calc_avg_semantic_diversity(model, qid_to_texts):
+    diversities = []
+    for texts in qid_to_texts.values():
+        if len(texts) < 2:
+            continue  
+        embeddings = model.encode(texts, show_progress_bar=False)
+        similarity_matrix = cosine_similarity(embeddings)
+        upper_triangular = similarity_matrix[np.triu_indices(len(texts), k=1)]
+        diversity = 1 - np.mean(upper_triangular)
+        diversities.append(diversity)
     
-    # Diversity is 1 - similarity (higher means more diverse)
-    return 1 - mean_similarity
+    return np.mean(diversities) if diversities else 0
+
+def calc_local_diversity(ingredients):
+    ingredient_list =  clean_ingredients(ingredients, ai_generated=False)
+    global_diversity = len(set(ingredient_list))
+    return global_diversity
 
 cos_score_source = []
 semantic_diversity = []
-model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-es', trust_remote_code=True).to('cuda')
+local_diversity = []
 
-for k in range(1,21):
-    scores, recipes = load_evaluate_res("./res/retrieval_res", k)
-    #avg cos score
+for k in tqdm(range(1, 21)):
+    scores, qid_to_titles, ingredients = load_evaluate_res("./res/retrieval_res", k)
+
     avg_score = sum(scores) / len(scores) 
     cos_score_source.append(avg_score)
-   
-    semantic_score = calc_semantic_diversity(model, recipes)
-    semantic_diversity.append(semantic_score)
-    print (k, semantic_score)
 
+    #res = calc_avg_semantic_diversity(model, qid_to_titles)
+    #semantic_diversity.append(res)
 
-plt.plot(range(1, 21), cos_score_source, marker='o')
-plt.title('Average Relevance Score vs. #Retrieval Results')
-plt.xlabel('#Retrieval Results')
-plt.ylabel('Average Relevance Score')
-#plt.ylim(0, 1)
+    res = calc_local_diversity(ingredients)
+    print (k,res)
+    local_diversity.append(res)
 
+'''
+ks = list(range(1, 21))
+plt.figure(figsize=(10, 6))
+plt.plot(ks, cos_score_source, marker='o', linestyle='-', label='Average Relevance Score')
+plt.plot(ks, semantic_diversity, marker='s', linestyle='--', label='Local Diversity')
+plt.title('Relevance & Diversity vs. #Retrieval Results')
+plt.xlabel('#Retrieval Results (Top-k)')
+plt.ylabel('Score')
+plt.ylim(0, 1)
 plt.grid(True)
-plt.savefig('./figures/average_score_vs_cutoff.png')
+plt.xticks(ks)
+plt.legend()
+plt.tight_layout()
+plt.savefig('./figures/average_score_vs_cutoff_1.png', dpi=300)
+plt.show()
+'''
+
+ks = list(range(1, 21))
+
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+# 左边的坐标轴：绘制 Average Relevance Score
+ax1.plot(ks, cos_score_source, marker='o', linestyle='-', color='tab:blue', label='Average Relevance Score')
+ax1.set_xlabel('#Retrieval Results (Top-k)')
+ax1.set_ylabel('Average Relevance Score', color='tab:blue')
+ax1.tick_params(axis='y', labelcolor='tab:blue')
+ax1.set_xticks(ks)
+ax1.grid(True)
+
+# 右边的坐标轴：绘制 Local Diversity
+ax2 = ax1.twinx()
+ax2.plot(ks, local_diversity, marker='s', linestyle='--', color='tab:orange', label='Local Diversity')
+ax2.set_ylabel('Local Diversity', color='tab:orange')
+ax2.tick_params(axis='y', labelcolor='tab:orange')
+
+# 图例
+lines_1, labels_1 = ax1.get_legend_handles_labels()
+lines_2, labels_2 = ax2.get_legend_handles_labels()
+ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
+
+plt.title('Relevance & Diversity vs. #Retrieval Results')
+plt.tight_layout()
+plt.savefig('./figures/average_score_vs_cutoff_dual_axis.png', dpi=300)
+plt.show()
 

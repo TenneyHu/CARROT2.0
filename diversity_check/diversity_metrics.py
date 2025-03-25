@@ -258,10 +258,6 @@ def compute_global_diversity(df, tmp="original", ai_generated=False):
         country_data = df[df['country'] == country]
         # get average length of Ingredients
         final_ingredients_ = clean_ingredients(country_data.to_dict('records'), ai_generated=ai_generated)
-        # ingredient_list = [item for sublist in final_ingredients_ for item in sublist]
-        # print len
-        # print(final_ingredients_[0]['Ingredientes_pr'])
-        # append to the list
 
         ingredient_list = []
         for i in final_ingredients_:
