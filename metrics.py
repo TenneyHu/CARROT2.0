@@ -1,250 +1,162 @@
-import matplotlib.pyplot as plt
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from collections import defaultdict
 from transformers import AutoModel
+import pandas as pd
+import argparse
+import matplotlib.pyplot as plt
 from tqdm import tqdm
-import re
-from unidecode import unidecode
-import inflect
-import ast
-p = inflect.engine()
-def limpiar_especificaciones(ingredientes, palabras_eliminar):
-    ingredientes_limpios = []
-    for ingrediente in ingredientes:
-        for palabra in palabras_eliminar:
-            ingrediente = ingrediente.replace(palabra, "").strip()
-        ingredientes_limpios.append(ingrediente)
-    return ingredientes_limpios
+from metrics_utils import calc_global_diversity, calc_avg_semantic_diversity
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_name', type=str, default='jinaai/jina-embeddings-v2-base-es',
+                        help='Name of the model to load')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Device to load the model on')
+    parser.add_argument('--results_file', type=str, default='./res/retrieval_res',
+                        help='File path for retrieval results')
+    parser.add_argument('--results_per_query', type=int, default=21,
+        help='return results per query')
+    parser.add_argument('--nums_query_rewriting', type=int, default=3,
+        help='nums of query rewriting')
+    return parser.parse_args()
 
-def remove_empty_strings(lst):
-    return [item for item in lst if item != '']
+def load_model(model_name, device):
+    return AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device)
 
-def remove_text_in_parentheses(text):
-    # This regex matches any text between parentheses and the parentheses themselves
-    result = re.sub(r'\(.*?\)', '', text)
-    return result
+def parse_results(dir):
 
-def remove_text_after_coma(text):
-    # remove text after coma
-    result = text.split(',')[0]   
-    return result
+    data = {
+        "qid": [],
+        "title": [],
+        "from_original_query": [],
+        "retrieve_position": [],
+        "rerank_position": [],
+        "score": [],
+        "rerank_score": [],
+        "ingredients": []
+    }
 
-def remove_punctuation(text):
-    # Remove punctuation using regex
-    return re.sub(r'[^\w\s]', '', text)
+    with open(dir, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.split(", ")
+            qid = int(parts[0].split("=")[1])
+            title = parts[1].split("=")[1].strip("'")
+            from_original_query = parts[2].split("=")[1] == 'True'
+            retrieve_position = int(parts[3].split("=")[1])
+            rerank_position = int(parts[4].split("=")[1])
+            score = float(parts[5].split("=")[1])
+            rerank_score = float(parts[6].split("=")[1])
+            ingredients = ",".join(parts[7:]).strip().split("=")[1].strip('"')
 
-def singularize_ingredient(ingredient):
-    # Split the ingredient into words
-    words = ingredient.split()
-    # Singularize each word if it is plural
-    singularized_words = [p.singular_noun(word) if p.singular_noun(word) else word for word in words]
-    # Join the words back into a single string
-    singularized_ingredient = ' '.join(singularized_words)
-    return singularized_ingredient
+            data["qid"].append(qid)
+            data["title"].append(title)
+            data["from_original_query"].append(from_original_query)
+            data["retrieve_position"].append(retrieve_position)
+            data["rerank_position"].append(rerank_position)
+            data["score"].append(score)
+            data["rerank_score"].append(rerank_score)
+            data["ingredients"].append(ingredients)
 
-def remove_everything_after(list_words, text):
-    for word in list_words:
-        if word in text:
-            text = text.split(word)[0]
-    return text
+    df = pd.DataFrame(data)
+    # Normalize the rerank_score column to a range of 0 to 1
+    min_score = df["rerank_score"].min()
+    max_score = df["rerank_score"].max()
+    df["rerank_score"] = (df["rerank_score"] - min_score) / (max_score - min_score)
+    return df
 
-# Función para limpiar cada línea del texto
-def limpiar_linea(linea,pattern):
-    return re.sub(pattern, '', linea, flags=re.IGNORECASE).strip()
+def calc_metrics(model, filtered_result, k_range, relevance_score= "reranking"):
+    source_relevance_score = []
+    semantic_diversity = []
+    global_diversity = []
 
-model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-es', trust_remote_code=True).to('cuda')
+    for k in tqdm(range(1, k_range+1)):
+        results = filtered_result[filtered_result["retrieve_position"] <= k]
+        # Ensure results are unique by title
+        #results = results.drop_duplicates(subset="title")
 
-def clean_ingredients(recipes, ai_generated=False):
+        qid_to_titles = results.groupby("qid")["title"].apply(list).to_dict()
 
-    remove_after_word = [' entre', ' al gusto', ' para', 'para ']
-    palabras_eliminar = ["mediana", "bastantes", "bastante", "rebanadas de", "pequeña", "trozos medianos", 
-                     "al gusto", "a gusto", "trozos de ", "trozo de ", "en trozos pequeños", ' ya ',
-                       " ()", "pequeño", "regulares", "lb. ", " suficiente"]
-    ingredient_list = []
-    for elem in recipes:
-
-        if ai_generated:
-            texto = (elem['mod'].split("Ingredientes")[1]).split("\n\n")[1].replace(" ", " ")
-            
-            texto = texto.lower() # lowercase
-            texto = texto.replace("¼", "1/4")
-            texto = texto.replace("½", "1/2")
-            texto = texto.replace("¾", "3/4")
-            texto = texto.replace("⅓", "1/3")
-            texto = texto.replace("Al gusto,", "")
-            texto = texto.replace("Al gusto:", "")
-            ingredientes = texto.split("* ")
-            ingredientes_principal = [i.split(',')[0] for i in ingredientes]
-            ingredientes_principal = [i.split('(')[0] for i in ingredientes_principal]
-
+        ingredients = results["ingredients"].tolist()
+        
+        if relevance_score == "reranking":
+            scores = results["rerank_score"].tolist()
         else:
-            if elem.strip().startswith("["):
-                try:
-                    ingredientes = ast.literal_eval(elem.strip())
-                    ingredientes = [ing.lower() for ing in ingredientes]
-                    ingredientes_principal = [remove_text_in_parentheses(ing) for ing in ingredientes]
-                    ingredientes_principal = [remove_text_after_coma(ing) for ing in ingredientes_principal]
-                    ingredientes_principal = [remove_everything_after(remove_after_word, ing) for ing in ingredientes_principal]
-                    ingredientes_principal = [ing.replace("¼", "1/4") for ing in ingredientes_principal]
-                    ingredientes_principal = [ing.replace("½", "1/2") for ing in ingredientes_principal]
-                    ingredientes_principal = [ing.replace("¾", "3/4") for ing in ingredientes_principal]
-                    ingredientes_principal = [ing.replace("⅓", "1/3") for ing in ingredientes_principal]
-                    ingredientes_principal = [ing.replace("cta.de,", "") for ing in ingredientes_principal]
-                    ingredientes_principal = [ing.replace("cinco:", "5") for ing in ingredientes_principal]
-                    ingredientes_principal = [ing.replace("azãºcar", "azúcar") for ing in ingredientes_principal]
-                except:
-                    continue
-            else:
-                texto = remove_text_in_parentheses(elem)
-                texto = remove_text_after_coma(texto)
-                texto = remove_everything_after(remove_after_word, texto)
-                texto = texto.lower()
-                texto = texto.replace("¼", "1/4")
-                texto = texto.replace("½", "1/2")
-                texto = texto.replace("¾", "3/4")
-                texto = texto.replace("⅓", "1/3")
-                texto = texto.replace("al gusto,", "")
-                texto = texto.replace("al gusto:", "")
-                texto = texto.replace("cta.de", "")
-                texto = texto.replace("cinco", "5")
-                texto = texto.replace("azãºcar", "azúcar")
-                ingredientes_principal = texto.split(',')
+            scores = results["score"].tolist()
 
-        pattern = r'\b\d+\s*(?:\/\d+)?\s*(?:g|gramos|pieza|centímetro cúbico|cucharada sopera|cc|un kilo|tableta|pisca|piezas|paquete|paquetes|un kilo|tarro|loncha|cabeza|cabezas|lonchas|kilogramo|kilogramos|puñados|chorrito|botella|gr.|libra|ralladura|lámina|barra|paquete|bastante|caja|rama|puñado|manojo|bote|vaso|pellizco|unidad|chorro|vaso|lata|rama|postre|litro|litros|mililitros|barra|-|cucharada colmada|unidades|copa|un kilo|kilo|gr|kg|ml|cl|dl|l|cm|bolas|dientes|diente|pizca|cucharadas soperas|tiras|tajadas|cucharaditas|cucharadita|cucharadas|mix|cucharada|cc|cda|cdta)?(?:\s+(?!de\b)(?:taza|tazas))?\b\s*(?:de)?'
+        avg_score = sum(scores) / len(scores) 
+        source_relevance_score.append(avg_score)
 
-        # print(ingredientes_principal, 'ingredientes principal')
-        # Aplicar la limpieza a cada línea y eliminar líneas vacías
-        lineas_limpias = []
-        lineas_limpias = [limpiar_linea(linea,pattern).lower() for linea in ingredientes_principal if linea.strip()]
+        res = calc_avg_semantic_diversity(model, qid_to_titles)
+        semantic_diversity.append(res)
 
-        # Eliminar la palabra "taza" o "tazas" si aparece al inicio de un elemento limpio
-        lineas_limpias_final = [re.sub(r'^(taza de|tazas de)\s+', '', linea, flags=re.IGNORECASE) for linea in lineas_limpias]
+        res = calc_global_diversity(ingredients)
+        global_diversity.append(res)
 
-        final_ingredients = []
-        for i in lineas_limpias_final:
-            if ' y ' in i:
-                two_ingredientes = i.split(' y ')
-                final_ingredients.append(two_ingredientes[0])
-                # final_ingredients.append(two_ingredientes[1])
-            elif 'o' in i:
-                two_ingredientes = i.split(' o ')
-                final_ingredients.append(two_ingredientes[0])
-            else:
-                final_ingredients.append(i)
+    return source_relevance_score, semantic_diversity, global_diversity
 
-        res = limpiar_especificaciones(final_ingredients, palabras_eliminar)
-        res = [singularize_ingredient(ingredient).rstrip('.') for ingredient in res ]
-        res  = [limpiar_linea(linea,pattern).lower().rstrip('.') for linea in res]
-        res = remove_empty_strings(res)
-        res = limpiar_especificaciones(res, ['cc de ','. de ', '. ', '- ', 'c/n ', ' c/n', 'ajã\xade', 'ajã\xad ', 'ðÿ§…', ' %', 'taza ', 'centimetro cubico de ', 'c.c', 'una ', 'trozo de ', 'un kilo de ', ' en cuadradito', 'semilla de ', 'copita de '])
-        # unidecode
-        res= [unidecode(ing) for ing in res]
-        ingredient_list.extend(res)
-    return ingredient_list
+def plot_metrics(source_relevance_score, semantic_diversity, global_diversity, ks, filename):
 
-def load_evaluate_res(filepath, cutoff):
-    scores = []
-    titles = []
-    qid_to_titles = defaultdict(list)
-    ingredients = []
-    with open(filepath, "r") as file:
-        for line in file:
-            try:
-                parts = line.strip().split("\t")
-                qid = parts[1]
-                pos = int(parts[2])
-                score = float(parts[3])
-                title = parts[4].split(":")[1]
-                ingredient = parts[5].split(":")[1]
-                if pos <= cutoff:
-                    scores.append(score)
-                    titles.append(title)
-                    qid_to_titles[qid].append(title)
-                    ingredients.append(ingredient)
-            except (IndexError, ValueError):
-                continue
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
 
-    return scores,  qid_to_titles, ingredients
+    # Plot semantic diversity vs source relevance score
+    ax1.plot(ks, source_relevance_score, marker='o', linestyle='-', color='tab:blue', label='Average Relevance Score')
+    ax1.set_xlabel('#Retrieval Results (Top-k)')
+    ax1.set_ylabel('Average Relevance Score', color='tab:blue')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    ax1.set_xticks(ks)
+    ax1.grid(True)
 
+    ax1_2 = ax1.twinx()
+    ax1_2.plot(ks, semantic_diversity, marker='s', linestyle='--', color='tab:orange', label='Semantic Diversity')
+    ax1_2.set_ylabel('Semantic Diversity', color='tab:orange')
+    ax1_2.tick_params(axis='y', labelcolor='tab:orange')
 
-def calc_avg_semantic_diversity(model, qid_to_texts):
-    diversities = []
-    for texts in qid_to_texts.values():
-        if len(texts) < 2:
-            continue  
-        embeddings = model.encode(texts, show_progress_bar=False)
-        similarity_matrix = cosine_similarity(embeddings)
-        upper_triangular = similarity_matrix[np.triu_indices(len(texts), k=1)]
-        diversity = 1 - np.mean(upper_triangular)
-        diversities.append(diversity)
-    
-    return np.mean(diversities) if diversities else 0
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_1_2, labels_1_2 = ax1_2.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_1_2, labels_1 + labels_1_2, loc='upper right')
+    ax1.set_title('Semantic Diversity vs. Average Relevance Score')
 
-def calc_local_diversity(ingredients):
-    ingredient_list =  clean_ingredients(ingredients, ai_generated=False)
-    global_diversity = len(set(ingredient_list))
-    return global_diversity
+    # Plot global diversity vs source relevance score
+    ax2.plot(ks, source_relevance_score, marker='o', linestyle='-', color='tab:blue', label='Average Relevance Score')
+    ax2.set_xlabel('#Retrieval Results (Top-k)')
+    ax2.set_ylabel('Average Relevance Score', color='tab:blue')
+    ax2.tick_params(axis='y', labelcolor='tab:blue')
+    ax2.set_xticks(ks)
+    ax2.grid(True)
 
-cos_score_source = []
-semantic_diversity = []
-local_diversity = []
+    ax2_2 = ax2.twinx()
+    ax2_2.plot(ks, global_diversity, marker='s', linestyle='--', color='tab:green', label='Global Diversity')
+    ax2_2.set_ylabel('Global Diversity', color='tab:green')
+    ax2_2.tick_params(axis='y', labelcolor='tab:green')
 
-for k in tqdm(range(1, 21)):
-    scores, qid_to_titles, ingredients = load_evaluate_res("./res/retrieval_res", k)
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    lines_2_2, labels_2_2 = ax2_2.get_legend_handles_labels()
+    ax2.legend(lines_2 + lines_2_2, labels_2 + labels_2_2, loc='upper right')
+    ax2.set_title('Global Diversity vs. Average Relevance Score')
 
-    avg_score = sum(scores) / len(scores) 
-    cos_score_source.append(avg_score)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
 
-    #res = calc_avg_semantic_diversity(model, qid_to_titles)
-    #semantic_diversity.append(res)
+def calc_original_query(args, model, results):
+    filtered_result = results[results["from_original_query"] == True]
+    k_range = args.results_per_query
+    source_relevance_score, semantic_diversity, global_diversity = calc_metrics(model, filtered_result, k_range)
+    ks = list(range(1, k_range + 1))
+    plot_metrics(source_relevance_score, semantic_diversity, global_diversity, ks, "figures/retrieve_only.png")
 
-    res = calc_local_diversity(ingredients)
-    print (k,res)
-    local_diversity.append(res)
+def calc_rewriting(args, model, results):
+    filtered_result = results
+    k_range = 7
+    source_relevance_score, semantic_diversity, global_diversity = calc_metrics(model, filtered_result, k_range)
+    ks = list(range(3,22,3))
+    print (ks)
+    plot_metrics(source_relevance_score, semantic_diversity, global_diversity, ks, "figures/retrieve_only.png")
 
-'''
-ks = list(range(1, 21))
-plt.figure(figsize=(10, 6))
-plt.plot(ks, cos_score_source, marker='o', linestyle='-', label='Average Relevance Score')
-plt.plot(ks, semantic_diversity, marker='s', linestyle='--', label='Local Diversity')
-plt.title('Relevance & Diversity vs. #Retrieval Results')
-plt.xlabel('#Retrieval Results (Top-k)')
-plt.ylabel('Score')
-plt.ylim(0, 1)
-plt.grid(True)
-plt.xticks(ks)
-plt.legend()
-plt.tight_layout()
-plt.savefig('./figures/average_score_vs_cutoff_1.png', dpi=300)
-plt.show()
-'''
+if __name__ == "__main__":
+    args = parse_args()
+    model = load_model(args.model_name, args.device)
+    results = parse_results(args.results_file)
 
-ks = list(range(1, 21))
+    # original query
+    #calc_original_query(args, model, results)
 
-fig, ax1 = plt.subplots(figsize=(10, 6))
-
-# 左边的坐标轴：绘制 Average Relevance Score
-ax1.plot(ks, cos_score_source, marker='o', linestyle='-', color='tab:blue', label='Average Relevance Score')
-ax1.set_xlabel('#Retrieval Results (Top-k)')
-ax1.set_ylabel('Average Relevance Score', color='tab:blue')
-ax1.tick_params(axis='y', labelcolor='tab:blue')
-ax1.set_xticks(ks)
-ax1.grid(True)
-
-# 右边的坐标轴：绘制 Local Diversity
-ax2 = ax1.twinx()
-ax2.plot(ks, local_diversity, marker='s', linestyle='--', color='tab:orange', label='Local Diversity')
-ax2.set_ylabel('Local Diversity', color='tab:orange')
-ax2.tick_params(axis='y', labelcolor='tab:orange')
-
-# 图例
-lines_1, labels_1 = ax1.get_legend_handles_labels()
-lines_2, labels_2 = ax2.get_legend_handles_labels()
-ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
-
-plt.title('Relevance & Diversity vs. #Retrieval Results')
-plt.tight_layout()
-plt.savefig('./figures/average_score_vs_cutoff_dual_axis.png', dpi=300)
-plt.show()
-
+    #rewriting
+    calc_rewriting(args, model, results)

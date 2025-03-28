@@ -2,9 +2,10 @@
 from llama_index.core import VectorStoreIndex, Document, StorageContext, load_index_from_storage
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import ollama
-from llama_index.core.schema import NodeWithScore
-from llama_index.core.data_structs import Node
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+    
 def recipe_title_generate(recipe):
     response = ollama.chat(model="llama3.1", messages=[
         {"role": "system", "content": "Here is a recipe without title; please create a short Spanish title for the recipe."},
@@ -23,7 +24,7 @@ def recipe_title_rewrite(ori_title):
     title = response["message"]["content"]
     return title
 
-def carrot_query_processing(ori_title, ori_content, query_rewrite, debugging):
+def carrot_query_processing(ori_title, ori_content, debugging, query_rewrite):
         if query_rewrite:
             generated_query = recipe_title_generate(ori_content)
             rewrited_query = recipe_title_rewrite(ori_title)
@@ -37,6 +38,25 @@ def carrot_query_processing(ori_title, ori_content, query_rewrite, debugging):
             print("Generated query: ", generated_query) 
             print("Rewritten query: ", rewrited_query)
         return res
+
+class RecipeInfo:
+    def __init__(self, title, ingredients, steps, is_original_query,
+                 position, score):
+        self.title = title.repalce(", ", ",")  
+        self.ingredients = ingredients  
+        self.steps = steps  
+        self.rerank_text = "Nombre:\t" + self.title + "\t" + "Ingredientes:\t" + self.ingredients
+        self.full_text = "Nombre:\t" + self.title + "\t" + "Ingredientes:\t" + self.ingredients + "\t" + "Pasos:\t" + self.steps
+        self.from_original_query = is_original_query  
+        self.retrieve_position = position
+        self.rerank_position = 0  
+        self.score = score  
+        self.rerank_score = 0.0
+
+    def __repr__(self):
+        return (f"title={self.title!r}, from_original_query={self.from_original_query}, "
+                f"retrieve_position={self.retrieve_position}, rerank_position={self.rerank_position}, "
+                f"score={self.score}, rerank_score={self.rerank_score}, ingredients={self.ingredients!r}")
     
 class CarrotRetriever():
     def __init__(self, emb_model, index_dir, full_document_maps, debugging = 0, 
@@ -47,6 +67,10 @@ class CarrotRetriever():
         self.debugging = debugging
         self.index = None
         self.has_reranking = reranking
+        self.reranking_model = AutoModelForSequenceClassification.from_pretrained('BAAI/bge-reranker-v2-m3').to('cuda')
+        self.reranking_model.eval()
+        self.tokenizer = AutoTokenizer.from_pretrained('BAAI/bge-reranker-v2-m3')
+        self.reranking_type = "relevance"
         self.res_num_per_query = res_num_per_query
         self.final_res_num = final_res_num
 
@@ -61,36 +85,58 @@ class CarrotRetriever():
         self.index = index
     
     def retrieve(self, quries):
-        print ("---Retrieval---")
         vector_retriever = self.index.as_retriever(similarity_top_k=self.res_num_per_query)
-        for query in quries:
+
+        documents = []
+        for qid,query in enumerate(quries):
             docs = vector_retriever.retrieve(query)
             if self.debugging:
                 for node in docs:
                     print(f"Query: {query} - Score: {node.score:.2f} - {node.text}")
-            if 'documents' not in locals():
-                documents = docs
-            else:
-                documents.extend(docs)
 
-        updated_documents = []
-        for doc in documents:
-            new_text = self.full_document_maps.get(doc.text, doc.text)
-            new_doc = NodeWithScore(node=Node(text=new_text), score=doc.score)
-            updated_documents.append(new_doc)
-
+            for rank, doc in enumerate(docs):
+                if doc.text in self.full_document_maps:
+                    ingredients, steps = self.full_document_maps[doc.text]
+                    new_doc = RecipeInfo(
+                        title=doc.text,
+                        ingredients=ingredients,
+                        steps=steps,
+                        is_original_query=(qid==0),
+                        position = rank + 1,
+                        score=doc.score
+                    )
+                    documents.append(new_doc)
+                else:
+                    print (f'recipe={doc.text} not found')
+                    
         if self.has_reranking:
-            return self.reranking(updated_documents)
+            return self.reranking(quries[0], documents)
         else:
-            updated_documents = sorted(updated_documents, key=lambda doc: doc.score, reverse=True)[:self.final_res_num]
+            documents = sorted(documents, key=lambda doc: doc.score, reverse=True)[:self.final_res_num]
         
-        return updated_documents
+        return documents
     
-    def reranking(self, res_list):
-        reranked_results = sorted(res_list, key=lambda doc: doc.score, reverse=True)[:self.final_res_num]
+    def reranking(self, query, res_list):
+        if self.reranking_type == "relevance":
+            pairs = [[query, doc.rerank_text] for doc in res_list]
+            with torch.no_grad():
+                
+                inputs = self.tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=128)
+                inputs = {k: v.to('cuda') for k, v in inputs.items()}
+                scores = self.reranking_model(**inputs, return_dict=True).logits.view(-1, ).float()
+
+            for doc, score in zip(res_list, scores):
+                doc.rerank_score = score
+            reranked_results = sorted(res_list, key=lambda doc: doc.rerank_score, reverse=True)
+            for rank, doc in enumerate(reranked_results):
+                doc.rerank_position = rank + 1
+        else:
+            reranked_results = sorted(res_list, key=lambda doc: doc.score, reverse=True)[:self.final_res_num]
+
         if self.debugging:
             print("--Reranking--")
             for doc in reranked_results:
-                print(f"Score: {doc.score:.2f} - {doc.text}")
+                print (doc)
+
         return reranked_results
         
