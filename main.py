@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument('--save_index', type=int, default=0,
                         help='switch of saving index to the disk')
     
-    parser.add_argument('--debugging', type=int, default=1,
+    parser.add_argument('--debugging', type=int, default=0,
                         help='display rettrieve logs')
     
     parser.add_argument('--llm_generate', type=int, default=1,
@@ -41,12 +41,21 @@ def parse_args():
     
     parser.add_argument('--reranking', type=int, default=1,
                         help='switch of reranking')
-    
+
+    parser.add_argument('--reranking_type', type=str, default="relevance",
+                        help='type of reranking')
+
+    parser.add_argument('--reranking_alpha', type=float, default=0.7,
+                        help='contorl of diversity in reranking')
+
     parser.add_argument('--task', type=str, default="recipe adaption",
                         help='The task you want to do')
     
     parser.add_argument('--input_file_dir', type=str, default="./data/recipe_adaption_demo.txt",
                         help='input file dir')
+    
+    parser.add_argument('--output_file_dir', type=str, default="./res/res",
+                        help='output file dir')
     
     parser.add_argument('--k_per_querytype', type=int, default=5,
                         help='retrieval cut off')
@@ -67,6 +76,8 @@ if __name__ == "__main__":
         full_document_maps=full_document_maps,
         debugging = args.debugging,
         reranking = args.reranking,
+        reranking_type = args.reranking_type,
+        reranking_alpha = args.reranking_alpha,
         res_num_per_query = args.k_per_querytype,
         final_res_num = args.final_k
     )
@@ -99,6 +110,7 @@ if __name__ == "__main__":
 
             print (str(response))
         qid += 1
-    with open("./res/retrieval_res","w") as f:
+
+    with open(args.output_file_dir,"w") as f:
         for line in res:
             f.write(line + "\n")
