@@ -9,6 +9,10 @@ import warnings
 
 
 def lexical_diversity(original, adapted):
+    # Description: Compute the lexical diversity of the original and adapted datasets
+    # Input: original and adapted datasets
+    # Output: DataFrame with the lexical diversity results
+
     final_df = pd.DataFrame()
 
     print("Computing original lexical diversity")
@@ -111,9 +115,12 @@ def local_diversity(df):
 
 
 balanced_adapted_dataset = pd.read_csv("res/balanced_adapted_recipes.csv")
-balanced_original_dataset = pd.read_csv("res/balanced_original_recipes.csv")
-balanced_adapted_dataset['temperature'] = balanced_adapted_dataset['temperature'].astype(str)
+# balanced_original_dataset = pd.read_csv("res/balanced_original_recipes.csv")
+# balanced_adapted_dataset['temperature'] = balanced_adapted_dataset['temperature'].astype(str)
 
-df_lexical_diversity = lexical_diversity(balanced_original_dataset, balanced_adapted_dataset)
-df_global_diversity, df_ingredients = global_diversity(balanced_original_dataset, balanced_adapted_dataset)
-df_local_diversity = local_diversity(df_ingredients)
+# df_lexical_diversity = lexical_diversity(balanced_original_dataset, balanced_adapted_dataset)
+# df_global_diversity, df_ingredients = global_diversity(balanced_original_dataset, balanced_adapted_dataset)
+# df_local_diversity = local_diversity(df_ingredients)
+
+
+print(balanced_adapted_dataset.head(5))

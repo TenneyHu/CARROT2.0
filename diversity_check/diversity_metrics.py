@@ -150,7 +150,7 @@ def compute_self_bleu(texts):
 recipe_ingredients_cuisine ={}
 
 
-def compute_lexical_diversity(df,separated_ingredients=True, tmp="original", ai_generated=False, mode = "ingredient_token"):
+def compute_lexical_diversity(df,separated_ingredients=True, tmp="original", ai_generated=False, mode = "ingredient_token", model_to_use="all-mpnet-base-v2"):
 
     results_analysis = []
     list_countries = list(set(list(df["country"])))
@@ -177,7 +177,7 @@ def compute_lexical_diversity(df,separated_ingredients=True, tmp="original", ai_
 
                 lexical_ngram_score = lexical_diversity(ing_tokens)
                 syntactic_score = syntactic_diversity(ing_tokens)
-                semantic_score = semantic_diversity(ing_tokens)
+                semantic_score = semantic_diversity(ing_tokens, model_to_use)
                 
                 # bert_vs = text_utils.embedding_vendi_score(only_texts, model_path="dccuchile/bert-base-spanish-wwm-cased")
                 # roberta_vs = text_utils.embedding_vendi_score(only_texts, model_path="bertin-project/bertin-roberta-base-spanish")
