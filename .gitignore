@@ -5,3 +5,4 @@ test.py
 nohup.out
 .vscode*
 res/
+*.csv
