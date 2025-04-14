@@ -14,7 +14,7 @@
 # The functions are used in the notebook: diversity_check/compute_diversity.ipynb
 
 
-
+from lexical_diversity import lex_div as ld
 from collections import Counter
 from nltk import ngrams, word_tokenize
 import nltk
@@ -32,6 +32,7 @@ from vendi_score import text_utils
 from transformers import AutoModel, AutoTokenizer
 import math
 from collections import defaultdict
+from nltk import word_tokenize
 
 # Load Spanish model
 nlp = spacy.load('es_core_news_sm')
@@ -62,6 +63,25 @@ def lexical_diversity(texts, n_values=[1, 2, 3]):
     diversity_score = total_unique_ngrams / total_ngrams if total_ngrams > 0 else 0
     return diversity_score
 
+
+# ----------- MSTTR -----------
+def msttr(texts, segment_length=50, language='spanish'):
+    all_ratios = []
+
+    for text in texts:
+        tokens = word_tokenize(text.lower(), language=language)
+        if len(tokens) < segment_length:
+            continue  # skip short texts
+        
+        # Split into fixed-length segments
+        segments = [tokens[i:i+segment_length] for i in range(0, len(tokens), segment_length)]
+        
+        for segment in segments:
+            types = set(segment)
+            ratio = len(types) / len(segment)
+            all_ratios.append(ratio)
+    
+    return np.mean(all_ratios) if all_ratios else 0
 
 
 def syntactic_diversity(texts, n_values=[1, 2, 3]):
