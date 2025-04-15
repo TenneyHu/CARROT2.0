@@ -26,7 +26,7 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from itertools import combinations
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
-from metrics import clean_ingredients, get_recipe_text, get_ingredient_text
+from metrics import clean_ingredients, get_recipe_text
 from lexical_diversity import lex_div as ld
 from vendi_score import text_utils
 from transformers import AutoModel, AutoTokenizer
@@ -267,6 +267,34 @@ def compute_lexical_diversity(df,separated_ingredients=True, tmp="original", ai_
     df.to_latex("latex_tables/lexical_diversity_"+ mode +".tex",index=False)
     return results_analysis
 
+def compute_global_diversity_from_column(df, column='Ingredientes_pr', mode="original"):
+    results_analysis = []
+    list_countries = df["country"].unique().tolist()
+    print("Computing global diversity from column", column, "for mode", mode)
+    
+    for country in list_countries:
+        country_data = df[df['country'] == country]
+
+        ingredient_list = []
+        for item in country_data[column]:
+            if isinstance(item, list):
+                if all(isinstance(subitem, list) for subitem in item):
+                    # Lista de listas (k generaciones)
+                    for sublist in item:
+                        ingredient_list.extend(sublist)
+                else:
+                    # Lista plana de ingredientes
+                    ingredient_list.extend(item)
+
+        global_diversity = len(set(ingredient_list))
+        results_analysis.append({
+            "country": country,
+            "mode": mode,
+            "ingredients": ingredient_list,
+            "global": global_diversity
+        })
+
+    return results_analysis
 
 
 def compute_global_diversity(df, tmp="original", ai_generated=False):
@@ -342,4 +370,56 @@ def compute_local_diversity(df):
                 #df = pd.concat([df, pd.DataFrame(results_analysis)], ignore_index=True)
 
             total_entropies.append({'country_': cuisine, 'entropy': entropy})
+    return total_entropies
+
+
+# modular version of compute_local_diversity 
+def compute_local_diversity_from_column(df, column='Ingredientes_pr', mode_label=''):
+    df['country_mode'] = df['country'] + '_' + df['mode'].astype(str)
+    total_entropies = []
+
+    all_ingredients = set()
+    for ingredients in df[column]:
+        if isinstance(ingredients, list):
+            if all(isinstance(sublist, list) for sublist in ingredients):
+                for sublist in ingredients:
+                    all_ingredients.update(sublist)
+            else:
+                all_ingredients.update(ingredients)
+
+    all_ingredients = sorted(all_ingredients)
+    ingredient_index = {ingredient: idx for idx, ingredient in enumerate(all_ingredients)}
+
+    # Count occurrences of each ingredient per cuisine
+    cuisine_ingredient_counts = defaultdict(lambda: defaultdict(int))
+
+    for row in df.to_dict('records'):
+        ingredients = row[column]
+        if isinstance(ingredients, list) and all(isinstance(sublist, list) for sublist in ingredients):
+            flattened = [ing for sub in ingredients for ing in sub]
+        else:
+            flattened = ingredients if isinstance(ingredients, list) else []
+
+        for ingredient in flattened:
+            cuisine_ingredient_counts[row['country_mode']][ingredient] += 1
+
+    # Create and normalize vectors
+    cuisine_vectors = {}
+    for cuisine, ingredient_counts in cuisine_ingredient_counts.items():
+        vector = [0] * len(all_ingredients)
+        total = sum(ingredient_counts.values())
+        for ing, count in ingredient_counts.items():
+            idx = ingredient_index[ing]
+            vector[idx] = count / total
+        cuisine_vectors[cuisine] = vector
+
+    # Compute entropy per cuisine
+    for cuisine, vector in cuisine_vectors.items():
+        entropy = calculate_entropy(vector)
+        total_entropies.append({
+            'country_mode': cuisine,
+            'entropy': entropy,
+            'mode': mode_label,
+        })
+
     return total_entropies
