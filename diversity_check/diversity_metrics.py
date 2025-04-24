@@ -33,6 +33,7 @@ from transformers import AutoModel, AutoTokenizer
 import math
 from collections import defaultdict
 from nltk import word_tokenize
+import torch
 
 # Load Spanish model
 nlp = spacy.load('es_core_news_sm')
@@ -127,16 +128,16 @@ def syntactic_diversity(texts, n_values=[1, 2, 3]):
 
 
 
-def semantic_diversity(texts, model_name='all-mpnet-base-v2'):
-    model = SentenceTransformer(model_name)
-    embeddings = model.encode(texts)
+# def semantic_diversity(texts, model_name='all-mpnet-base-v2'):
+#     model = SentenceTransformer(model_name)
+#     embeddings = model.encode(texts)
     
-    similarity_matrix = cosine_similarity(embeddings)
-    upper_triangular_values = similarity_matrix[np.triu_indices(len(texts), k=1)]
-    mean_similarity = np.mean(upper_triangular_values)
+#     similarity_matrix = cosine_similarity(embeddings)
+#     upper_triangular_values = similarity_matrix[np.triu_indices(len(texts), k=1)]
+#     mean_similarity = np.mean(upper_triangular_values)
     
-    # Diversity is 1 - similarity (higher means more diverse)
-    return 1 - mean_similarity
+#     # Diversity is 1 - similarity (higher means more diverse)
+#     return 1 - mean_similarity
 
 
 
@@ -423,3 +424,38 @@ def compute_local_diversity_from_column(df, column='Ingredientes_pr', mode_label
         })
 
     return total_entropies
+
+# ----------- Semantic Diversity -----------
+def calc_avg_semantic_diversity(texts, model):
+    """
+    Calculates the average semantic diversity of a list of texts.
+
+    Args:
+        texts (List[str]): A list of text strings.
+        model (SentenceTransformer): A sentence transformer model.
+
+    Returns:
+        float: The average semantic diversity score.
+    """
+    embeddings = model.encode(texts)
+    similarity_matrix = cosine_similarity(embeddings)
+    # Exclude self-similarity by setting the diagonal to zero
+    np.fill_diagonal(similarity_matrix, 0)
+    avg_similarity = np.sum(similarity_matrix) / (len(texts) * (len(texts) - 1))
+    avg_diversity = 1 - avg_similarity
+    return avg_diversity
+
+# Load the Jina bilingual Spanish-English embedding model
+# model = SentenceTransformer("jinaai/jina-embeddings-v2-base-es", trust_remote_code=True)
+
+# # Example texts
+# texts = [
+#     "El gato se sienta en la alfombra.",
+#     "el gato es bonito en la alfombra.",
+# ]
+
+# # Calculate average semantic diversity
+# diversity_score = calc_avg_semantic_diversity(texts, model)
+# print(f"Average Semantic Diversity: {diversity_score:.4f}")
+
+

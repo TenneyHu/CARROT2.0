@@ -5,9 +5,10 @@ import json
 import ast
 from metrics import clean_ingredients
 import numpy as np
-from diversity_metrics import compute_global_diversity_from_column, lexical_diversity, msttr, syntactic_diversity, compute_local_diversity_from_column
+from diversity_metrics import calc_avg_semantic_diversity, compute_global_diversity_from_column, lexical_diversity, msttr, syntactic_diversity, compute_local_diversity_from_column
 from lexical_diversity import lex_div as ld
 from vendi_score import text_utils
+from sentence_transformers import SentenceTransformer
 #%%
 
 # if __name__ == "__main__":
@@ -39,20 +40,26 @@ param_configs = [
 #%%
 config_results = []
 lexical_diversity_computation = False
-compute_advanced_lexdiv = True
+compute_advanced_lexdiv = False
 vendi_score_computation = False
 compute_global_ingredient_diversity = False 
+semantic_diversity_computation = True
+
+if semantic_diversity_computation:
+    model = SentenceTransformer("jinaai/jina-embeddings-v2-base-es", trust_remote_code=True)
+
 
 filename = f'res/adaptation/output_t1e-13_k0_p1.0.json'
 with open(filename, 'r') as file:
     data = json.load(file)
 df = pd.DataFrame(data)
 df['original_text'] = df['src'].apply(lambda x: x['src'])
-df_ini = clean_ingredients(df.to_dict('records'), ai_generated=True, list_mode=False, name_column='original_text')
-df_ini = pd.DataFrame(df_ini)
-print(df_ini.head())
-print("Computed clean ingredients for the original recipes.")
-print(df_ini['Ingredientes_pr'].to_list()[0])
+if compute_global_ingredient_diversity:
+    df_ini = clean_ingredients(df.to_dict('records'), ai_generated=True, list_mode=False, name_column='original_text')
+    df_ini = pd.DataFrame(df_ini)
+    print(df_ini.head())
+    print("Computed clean ingredients for the original recipes.")
+    print(df_ini['Ingredientes_pr'].to_list()[0])
 
 for param_config in param_configs:
     print(f"***Current configuration: {param_config}")
@@ -72,15 +79,18 @@ for param_config in param_configs:
     df['original_text'] = df['src'].apply(lambda x: x['src'])
     df['adapted_texts'] = df['mod_list']
     df['n_adaptations'] = df['adapted_texts'].apply(len)
-    df['original_ingredients'] = df_ini['Ingredientes_pr'].to_list()
+    if compute_global_ingredient_diversity:
+        df['original_ingredients'] = df_ini['Ingredientes_pr'].to_list()
+
+
 
     # add computation of the original_ingredients
     df = clean_ingredients(df.to_dict('records'), ai_generated=True, list_mode=True, name_column='original_text')
     df = pd.DataFrame(df)
-    print(df.head())
-    print("Extracted ingredients from adapted texts...")
+    # print(df.head())
+    # print("Extracted ingredients from adapted texts...")
 
-    print(df.head())
+    # print(df.head())
     # Common values (always defined if needed later)
     all_adaptations = [mod for mods in df['adapted_texts'] for mod in mods]
     first_adaptations = [mods[0] for mods in df['adapted_texts'] if mods]
@@ -238,44 +248,25 @@ for param_config in param_configs:
         })
 
 
+    if semantic_diversity_computation:
+        
+        print("Computing semantic diversity...")
 
-    # if compute_global_ingredient_diversity:
-    #     print("Computing global ingredient diversity...")
+        # === Across-input semantic diversity ===
+        # Es decir, por receta: calcular la diversidad entre sus adaptaciones
+        def safe_semantic_diversity(texts):
+            return calc_avg_semantic_diversity(texts, model) if len(texts) > 1 else 0.0
 
-    #     try:
-    #         df['country'] = 'Spain'  # si no tienes country real
+        df['semantic_diversity'] = df['adapted_texts'].apply(safe_semantic_diversity)
+        mean_across_input_semantic_div = df['semantic_diversity'].mean()
 
-    #         global_diversity_original = compute_global_diversity_from_column(df, column='original_ingredients', mode="adapted")
-    #         diversity_counts = [r['global'] for r in global_diversity_original]
-    #         mean_global_div = np.mean(diversity_counts)
-    #         result_dict.update({
-    #             'original_global_diversity': mean_global_div,
-    #         })
+        result_dict.update({
+            'mean_across_input_semantic_diversity': mean_across_input_semantic_div,
+        })
 
-    #         global_diversity_stats = compute_global_diversity_from_column(df, column='Ingredientes_pr', mode="adapted")
-    #         diversity_counts = [r['global'] for r in global_diversity_stats]
-    #         mean_global_div = np.mean(diversity_counts)
+        print(f"Mean across-input semantic diversity: {mean_across_input_semantic_div:.4f}")
 
-    #         result_dict.update({
-    #             'adapted_global_diversity': mean_global_div,
-    #         })
-
-    #         # only first generation of each input
-    #         # Extraer solo los ingredientes de la primera adaptación por receta
-    #         df['Ingredientes_pr_first'] = df['Ingredientes_pr'].apply(
-    #             lambda lista_de_listas: lista_de_listas[0] if isinstance(lista_de_listas, list) and len(lista_de_listas) > 0 else []
-    #         )
-    #         global_diversity_first = compute_global_diversity_from_column(df, column='Ingredientes_pr_first', mode="adapted_first")
-    #         diversity_first_counts = [r['global'] for r in global_diversity_first]
-    #         mean_global_div_first = np.mean(diversity_first_counts)
-    #         result_dict.update({
-    #             'adapted_global_diversity_first': mean_global_div_first,
-    #         })
-            
-    #     except Exception as e:
-    #         print(f"Could not compute global ingredient diversity: {e}")
-
-    
+        
 
 
     config_results.append(result_dict)
