@@ -268,10 +268,10 @@ def compute_lexical_diversity(df,separated_ingredients=True, tmp="original", ai_
     df.to_latex("latex_tables/lexical_diversity_"+ mode +".tex",index=False)
     return results_analysis
 
-def compute_global_diversity_from_column(df, column='Ingredientes_pr', mode="original"):
+def compute_global_diversity_from_column(df, column='Ingredientes_pr', mode='original'):
     results_analysis = []
     list_countries = df["country"].unique().tolist()
-    print("Computing global diversity from column", column, "for mode", mode)
+    # print("Computing global diversity from column", column, "for mode", mode)
     
     for country in list_countries:
         country_data = df[df['country'] == country]
@@ -296,6 +296,78 @@ def compute_global_diversity_from_column(df, column='Ingredientes_pr', mode="ori
         })
 
     return results_analysis
+
+# def compute_global_diversity_from_column(df, column='Ingredientes_pr', mode='original', per_recipe=False):
+#     """
+#     Calcula la diversidad global de ingredientes.
+#     Si per_recipe es False, devuelve la diversidad global (pool).
+#     Si per_recipe es True, devuelve la diversidad global por receta (lista).
+#     """
+#     results_analysis = []
+
+#     list_countries = df["country"].unique().tolist()
+#     for country in list_countries:
+#         country_data = df[df['country'] == country]
+
+#         if not per_recipe:
+#             # --- POOL GLOBAL ---
+#             ingredient_list = []
+#             for item in country_data[column]:
+#                 if isinstance(item, list):
+#                     if all(isinstance(subitem, list) for subitem in item):
+#                         for sublist in item:
+#                             ingredient_list.extend(sublist)
+#                     else:
+#                         ingredient_list.extend(item)
+#             global_diversity = len(set(ingredient_list))
+#             results_analysis.append({
+#                 "country": country,
+#                 "mode": mode,
+#                 "ingredients": ingredient_list,
+#                 "global": global_diversity
+#             })
+#         else:
+#             # --- PER RECIPE DIVERSITY ---
+#             for idx, row in country_data.iterrows():
+#                 item = row[column]
+#                 ingredient_list = []
+#                 if isinstance(item, list):
+#                     if all(isinstance(subitem, list) for subitem in item):
+#                         for sublist in item:
+#                             ingredient_list.extend(sublist)
+#                     else:
+#                         ingredient_list = item
+#                 global_div = len(set(ingredient_list))
+#                 results_analysis.append({
+#                     "idx": idx,
+#                     "country": country,
+#                     "mode": mode,
+#                     "ingredients": ingredient_list,
+#                     "global": global_div
+#                 })
+#     return results_analysis
+
+
+def avg_pairwise_jaccard_diversity(ingredient_lists):
+    from itertools import combinations
+    if not ingredient_lists or len(ingredient_lists) < 2:
+        return 0.0  # Only one adaptation, so no diversity
+    pairs = list(combinations(ingredient_lists, 2))
+    sims = []
+    for a, b in pairs:
+        set_a, set_b = set(a), set(b)
+        if set_a or set_b:
+            jaccard = len(set_a & set_b) / len(set_a | set_b)
+        else:
+            jaccard = 1.0
+        sims.append(jaccard)
+    return 1 - np.mean(sims)
+
+def ingredient_length_stats(ingredient_lists):
+    lengths = [len(lst) for lst in ingredient_lists]
+    avg_length = np.mean(lengths)
+    std_length = np.std(lengths)
+    return avg_length, std_length
 
 
 def compute_global_diversity(df, tmp="original", ai_generated=False):
@@ -323,6 +395,14 @@ def calculate_entropy(probabilities):
         if p > 0:  # Avoid log(0)
             entropy -= p * math.log(p)
     return entropy
+
+def calculate_entropy_per_input(p_vec):
+    # Avoid log(0) by only calculating for p > 0
+    p_vec = np.array(p_vec)
+    p_vec = p_vec[p_vec > 0]
+    if len(p_vec) == 0:
+        return 0
+    return -np.sum(p_vec * np.log2(p_vec))
 
 def compute_local_diversity(df):
     df['country_mode'] = df['country'] + '_' + df['mode'].astype(str)
@@ -374,8 +454,27 @@ def compute_local_diversity(df):
     return total_entropies
 
 
+def compute_input_diversity(ingredient_lists):
+    all_ingredients = set()
+    for ing_list in ingredient_lists:
+        all_ingredients.update(ing_list)
+    all_ingredients = sorted(all_ingredients)
+    
+    ingredient_counts = Counter()
+    for ing_list in ingredient_lists:
+        ingredient_counts.update(ing_list)
+    
+    total = sum(ingredient_counts.values())
+    if total == 0:
+        return 0
+    vector = [ingredient_counts[ing] / total for ing in all_ingredients]
+    return calculate_entropy(vector)
+
+
 # modular version of compute_local_diversity 
 def compute_local_diversity_from_column(df, column='Ingredientes_pr', mode_label=''):
+    if 'mode' not in df.columns:
+        df['mode'] = ''
     df['country_mode'] = df['country'] + '_' + df['mode'].astype(str)
     total_entropies = []
 

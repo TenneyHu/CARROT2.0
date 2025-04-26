@@ -3,277 +3,254 @@ import warnings
 import pandas as pd
 import json
 import ast
-from metrics import clean_ingredients
 import numpy as np
-from diversity_metrics import calc_avg_semantic_diversity, compute_global_diversity_from_column, lexical_diversity, msttr, syntactic_diversity, compute_local_diversity_from_column
+
+from metrics import clean_ingredients
+from diversity_metrics import (
+    avg_pairwise_jaccard_diversity,
+    calc_avg_semantic_diversity,
+    compute_global_diversity_from_column,
+    compute_input_diversity,
+    lexical_diversity,
+    msttr,
+    syntactic_diversity,
+    compute_local_diversity_from_column
+)
 from lexical_diversity import lex_div as ld
 from vendi_score import text_utils
 from sentence_transformers import SentenceTransformer
-#%%
 
-# if __name__ == "__main__":
-    
-# configurations 
+# ========== PARAMETERS ==========
 param_configs = [
-    # deterministic sampling
     {"temperature": 0.0000000000001, "top_k": 0, "top_p": 1.0},   # casi greedy
-    
-    # controlled sampling
-    {"temperature": 0.3, "top_k": 20, "top_p": 0.9},    
-
-    # a bit more sampling
+    {"temperature": 0.0000000000001, "top_k": 50, "top_p": 0.9},   # casi greedy
+    {"temperature": 0.3, "top_k": 20, "top_p": 0.9},
+    {"temperature": 0.3, "top_k": 50, "top_p": 0.9},       
     {"temperature": 0.6, "top_k": 40, "top_p": 0.95},
-
-    # more sampling, and add limit top_p
     {"temperature": 0.9, "top_k": 50, "top_p": 0.9},
-
-    # Top-p only (no top_k)
     {"temperature": 0.9, "top_k": 0, "top_p": 0.92},
-
-    # no restrictions in the sampling (big exploration)
+    {"temperature": 1.0, "top_k": 40, "top_p": 0.85},
+    {"temperature": 1.0, "top_k": 0, "top_p": 0.85},
+    {"temperature": 1.0, "top_k": 20, "top_p": 0.85},
     {"temperature": 1.2, "top_k": 0, "top_p": 1.0},
-
-    # common configuration in benchmarks
-    {"temperature": 1.0, "top_k": 40, "top_p": 0.85}
+    {"temperature": 1.2, "top_k": 20, "top_p": 1.0},
+    {"temperature": 1.2, "top_k": 40, "top_p": 1.0},
+    {"temperature": 1.2, "top_k": 40, "top_p": 0.85},
+    {"temperature": 1.2, "top_k": 50, "top_p": 1.0},
 ]
 
-#%%
-config_results = []
-lexical_diversity_computation = False
-compute_advanced_lexdiv = False
-vendi_score_computation = False
-compute_global_ingredient_diversity = False 
-semantic_diversity_computation = True
-
-if semantic_diversity_computation:
-    model = SentenceTransformer("jinaai/jina-embeddings-v2-base-es", trust_remote_code=True)
-
-
-filename = f'res/adaptation/output_t1e-13_k0_p1.0.json'
-with open(filename, 'r') as file:
-    data = json.load(file)
-df = pd.DataFrame(data)
-df['original_text'] = df['src'].apply(lambda x: x['src'])
-if compute_global_ingredient_diversity:
-    df_ini = clean_ingredients(df.to_dict('records'), ai_generated=True, list_mode=False, name_column='original_text')
-    df_ini = pd.DataFrame(df_ini)
-    print(df_ini.head())
-    print("Computed clean ingredients for the original recipes.")
-    print(df_ini['Ingredientes_pr'].to_list()[0])
-
-for param_config in param_configs:
-    print(f"***Current configuration: {param_config}")
-
-    temp = param_config['temperature']
-    top_k = param_config['top_k']
-    top_p = param_config['top_p']
-    filename = f'res/adaptation/output_t{temp}_k{top_k}_p{top_p}.json'
-
-    with open(filename, 'r') as file:
-        data = json.load(file)
-
+# ========== UTILS ==========
+def load_json_to_df(filename):
+    with open(filename, 'r') as f:
+        data = json.load(f)
     df = pd.DataFrame(data)
-
-    # === Preprocessing ===
-    df['mod_list'] = df['mod_list'].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
     df['original_text'] = df['src'].apply(lambda x: x['src'])
+    df['mod_list'] = df['mod_list'].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
     df['adapted_texts'] = df['mod_list']
     df['n_adaptations'] = df['adapted_texts'].apply(len)
-    if compute_global_ingredient_diversity:
-        df['original_ingredients'] = df_ini['Ingredientes_pr'].to_list()
+    return df
 
-
-
-    # add computation of the original_ingredients
-    df = clean_ingredients(df.to_dict('records'), ai_generated=True, list_mode=True, name_column='original_text')
-    df = pd.DataFrame(df)
-    # print(df.head())
-    # print("Extracted ingredients from adapted texts...")
-
-    # print(df.head())
-    # Common values (always defined if needed later)
-    all_adaptations = [mod for mods in df['adapted_texts'] for mod in mods]
+def compute_lexical_diversity_metrics(df):
     first_adaptations = [mods[0] for mods in df['adapted_texts'] if mods]
-    original_texts = df['original_text'].tolist()
+    df['adapted_lex_diversities'] = df['adapted_texts'].apply(
+        lambda mods: [lexical_diversity([mod]) for mod in mods]
+    )
+    df['per_input_lexical_diversity'] = df['adapted_lex_diversities'].apply(
+        lambda scores: np.mean(scores) if scores else 0
+    )
+    df['per_input_lexical_diversity_std'] = df['adapted_lex_diversities'].apply(
+        lambda scores: np.std(scores) if scores else 0
+    )
+    metrics = {
+        'across_input_adapted_ttr': lexical_diversity(first_adaptations),
+        'across_input_adapted_msttr': msttr(first_adaptations),
+        'mean_per_input_lexical_diversity': df['per_input_lexical_diversity'].mean(),
+        'mean_per_input_lexical_diversity_std': df['per_input_lexical_diversity_std'].mean(),
+    }
+    return metrics
 
-    result_dict = {
-        'filename': filename,
-        'temperature': temp,
-        'top_k': top_k,
-        'top_p': top_p,
-        'n_samples': len(df),
-        'n_adaptations_per_input': df['n_adaptations'].max(),
+def compute_semantic_diversity_metrics(df, original_recipes, model):
+    import numpy as np
+    from scipy.spatial.distance import pdist
+    all_texts = set()
+    for mods in df['adapted_texts']:
+        all_texts.update(mods)
+    all_texts.update(original_recipes)
+    all_texts = list(all_texts)
+    text2embedding = {}
+    batch_size = 16
+    for i in range(0, len(all_texts), batch_size):
+        batch = all_texts[i:i+batch_size]
+        embeddings = model.encode(batch, show_progress_bar=False, convert_to_numpy=True, device='cpu')
+        for t, emb in zip(batch, embeddings):
+            text2embedding[t] = emb
+    print("Text embeddings computed!")
+    def avg_cosine_distance(texts):
+        if len(texts) < 2:
+            return 0.0
+        vecs = np.stack([text2embedding[t] for t in texts])
+        dists = pdist(vecs, metric="cosine")
+        return float(np.mean(dists))
+    df['per_input_semantic_diversity'] = df['adapted_texts'].apply(avg_cosine_distance)
+    per_input_semdiv_mean = df['per_input_semantic_diversity'].mean()
+    per_input_semdiv_std = df['per_input_semantic_diversity'].std()
+    first_adaptations = [mods[0] for mods in df['adapted_texts'] if mods]
+    across_input_adapted_semdiv = avg_cosine_distance(first_adaptations)
+    across_input_original_semdiv = avg_cosine_distance(original_recipes)
+    return {
+        'per_input_adapted_semdiv_mean': per_input_semdiv_mean,
+        'per_input_adapted_semdiv_std': per_input_semdiv_std,
+        'across_input_adapted_semdiv': across_input_adapted_semdiv,
+        'across_input_original_semdiv': across_input_original_semdiv,
     }
 
-    if lexical_diversity_computation:
-        print("Computing lexical diversity...")
+def compute_ingredient_diversity_metrics(df):
+    metrics = {}
 
-        # Per-input diversity
-        df['adapted_lex_diversities'] = df['adapted_texts'].apply(
-            lambda mods: [lexical_diversity([mod]) for mod in mods]
-        )
-        df['per_input_lexical_diversity'] = df['adapted_lex_diversities'].apply(
-            lambda scores: np.mean(scores) if scores else 0
-        )
-        df['per_input_lexical_diversity_std'] = df['adapted_lex_diversities'].apply(
-            lambda scores: np.std(scores) if scores else 0
-        )
+    # GLOBAL DIVERSITY
+    # ---> Across input global diversity (original data)
+    global_diversity_original = compute_global_diversity_from_column(df, column='original_ingredients', mode="original")
+    metrics['across_input_global_diversity_original'] = np.mean([r['global'] for r in global_diversity_original])
 
-        result_dict.update({
-            'original_lexical_diversity': lexical_diversity(original_texts),
-            'mean_per_input_lexical_diversity': df['per_input_lexical_diversity'].mean(),
-            'mean_per_input_lexical_diversity_std': df['per_input_lexical_diversity_std'].mean(),
-            'across_input_lexical_diversity_all': lexical_diversity(all_adaptations),
-            'across_input_lexical_diversity_first': lexical_diversity(first_adaptations),
-        })
+    # ---> Across input global diversity (adapted data) here 
+    # 1. We take the first adaptation only. 
+    df['Ingredientes_pr_first'] = df['Ingredientes_pr'].apply(
+        lambda lista: lista[0] if isinstance(lista, list) and len(lista) > 0 else []
+    )
+    global_diversity_first = compute_global_diversity_from_column(df, column='Ingredientes_pr_first', mode="adapted")
+    metrics['across_input_global_diversity_adapted'] =  np.mean([r['global'] for r in global_diversity_first])
 
-    if compute_advanced_lexdiv:
-        print("Computing MSTTR...")
-        result_dict.update({
-            'original_msttr': msttr(original_texts),
-            'across_input_msttr_all': msttr(all_adaptations),
-            'across_input_msttr_first': msttr(first_adaptations),
-        })
+    # ---> Per input global diversity (adapted data, because in original data we have only one recipe so no diversity)
+    # I think it doesnt make sense to compute the global diversity for inside one input recipe, because of the definition of global diversity.
+    # i think it is better to study the diversity here as ingredient overlap between the different adaptations of the same recipe. 
+    df['pairwise_ingredient_diversity'] = df['mod_list'].apply(
+        lambda lsts: avg_pairwise_jaccard_diversity(lsts) if len(lsts) > 1 else 1.0
+    )
+    df['pairwise_ingredient_diversity'] = df['pairwise_ingredient_diversity'].replace([np.inf, -np.inf], 0)
+    metrics['per_input_pairwise_ingredient_diversity'] = df['pairwise_ingredient_diversity'].mean()
+    # Additionally, we ccomplete the 
+    df['avg_ingredient_length'] = df['Ingredientes_pr'].apply(lambda ings: np.mean([len(lst) for lst in ings]))
+    df['std_ingredient_length'] = df['Ingredientes_pr'].apply(lambda ings: np.std([len(lst) for lst in ings]))
 
-        print("Computing advanced lexical diversity (TTR, MTLD, HDD)...")
+    # Overall (across all adaptations in the dataset)
+    all_lengths = [len(lst) for recipe in df['Ingredientes_pr'] for lst in recipe]
+    metrics['overall_avg_length'] = np.mean(all_lengths)
+    metrics['overall_std_length'] = np.std(all_lengths)
 
-        def compute_ld_metrics(text_list):
-            tokens = " ".join(text_list).split()
-            return {
-                'ttr': ld.ttr(tokens),
-                'mtld': ld.mtld(tokens),
-                'hdd': ld.hdd(tokens),
+    # LOCAL DIVERSITY
+    local_diversity_original = compute_local_diversity_from_column(df, column='original_ingredients', mode_label="original")
+    metrics['across_input_local_diversity_original'] = np.mean([r['entropy'] for r in local_diversity_original])
+
+    local_diversity_first = compute_local_diversity_from_column(df, column='Ingredientes_pr_first', mode_label="adapted")
+    metrics['across_input_global_diversity_adapted'] =  np.mean([r['entropy'] for r in local_diversity_first])
+    
+    input_diversities = [
+        compute_input_diversity(row['Ingredientes_pr'])
+        if isinstance(row['Ingredientes_pr'], list) and all(isinstance(opt, list) for opt in row['Ingredientes_pr']) and len(row['Ingredientes_pr']) > 1
+        else np.nan
+        for _, row in df.iterrows()
+    ]
+    mean_per_input_diversity = np.nanmean(input_diversities)
+    metrics['mean_per_input_local_diversity'] = mean_per_input_diversity
+
+
+    return metrics
+
+# ------------------------------------------------------------------------------------
+#%%
+# ========== MAIN SCRIPT ==========
+diversity_computation = {'LEXICAL': False, 'SEMANTIC': False, 'SYNTACTIC': False, 'INGREDIENT': True}
+for diversity_type in diversity_computation:
+    print(f"Computing {diversity_type} diversity...")
+    filename_results = f'res/adaptation/diversity_results_{diversity_type.lower()}.csv'
+
+    if not diversity_computation[diversity_type]:
+        print(f"[Skipping {diversity_type} diversity computation]")
+        continue
+
+    # --- Carga y extracción de ingredientes originales SOLO UNA VEZ ---
+    first_config = param_configs[0]
+    first_filename = f'res/adaptation/output_t{first_config["temperature"]}_k{first_config["top_k"]}_p{first_config["top_p"]}.json'
+    df0 = load_json_to_df(first_filename)
+    df0['country'] = 'Spain'
+    df0_cleaned = clean_ingredients(df0.to_dict('records'), ai_generated=True, list_mode=False, name_column='original_text')
+    df0_cleaned = pd.DataFrame(df0_cleaned)
+    original_ingredients_list = df0_cleaned['Ingredientes_pr'].tolist()
+    original_recipes = df0['original_text'].tolist()
+    original_ttr = lexical_diversity(original_recipes)
+    original_msttr = msttr(original_recipes)
+    # --- FIN Carga ingredientes originales ---
+
+    config_results = []
+
+    for iteration, param_config in enumerate(param_configs[1:3]):
+        print(f"***Current configuration: {param_config}")
+
+        # we need to save the config for posterior evaluation analysis
+        temp = param_config['temperature']
+        top_k = param_config['top_k']
+        top_p = param_config['top_p']
+
+        filename = f'res/adaptation/output_t{temp}_k{top_k}_p{top_p}.json'
+        df = load_json_to_df(filename)
+        df['country'] = 'Spain'
+        df_cleaned = clean_ingredients(df.to_dict('records'), ai_generated=True, list_mode=True, name_column='original_text')
+        df_cleaned = pd.DataFrame(df_cleaned)
+
+        # --- ASIGNA ingredientes originales alineados ---
+        df_cleaned['original_ingredients'] = original_ingredients_list
+        # ------------------------------------------------
+
+        # Para debug visual
+        # print(df_cleaned[['Ingredientes_pr', 'original_ingredients']].head())
+
+        if diversity_type == 'LEXICAL':
+            lex_metrics = compute_lexical_diversity_metrics(df)
+            result_dict = {
+                'filename': filename,
+                'temperature': temp,
+                'top_k': top_k,
+                'top_p': top_p,
+                'n_samples': len(df),
+                'n_adaptations_per_input': df['n_adaptations'].max(),
+                'across_input_original_ttr': original_ttr,
+                'across_input_original_msttr': original_msttr,
+                **lex_metrics
             }
 
-        original_ld = compute_ld_metrics(original_texts)
-        all_adapted_ld = compute_ld_metrics(all_adaptations)
-        first_adapted_ld = compute_ld_metrics(first_adaptations)
+        if diversity_type == 'SEMANTIC':
+            model = SentenceTransformer("jinaai/jina-embeddings-v2-base-es", trust_remote_code=True)
+            sem_metrics = compute_semantic_diversity_metrics(df, original_recipes, model)
+            result_dict = {
+                'filename': filename,
+                'temperature': temp,
+                'top_k': top_k,
+                'top_p': top_p,
+                'n_samples': len(df),
+                'n_adaptations_per_input': df['n_adaptations'].max(),
+                **sem_metrics
+            }
 
-        result_dict.update({
-            'original_hdd': original_ld['hdd'],
-            'across_input_hdd_all': all_adapted_ld['hdd'],
-            'across_input_hdd_first': first_adapted_ld['hdd'],
+        if diversity_type == 'SYNTACTIC':
+            pass
 
-            'original_ttr': original_ld['ttr'],
-            'across_input_ttr_all': all_adapted_ld['ttr'],
-            'across_input_ttr_first': first_adapted_ld['ttr'],
+        if diversity_type == 'INGREDIENT':
+            print("\tComputing ingredient diversity metrics...")
+            ingredient_metrics = compute_ingredient_diversity_metrics(df_cleaned)
+            result_dict = {
+                'filename': filename,
+                'temperature': temp,
+                'top_k': top_k,
+                'top_p': top_p,
+                'n_samples': len(df_cleaned),
+                'n_adaptations_per_input': df['n_adaptations'].max(),
+                **ingredient_metrics
+            }
 
-            'original_mtld': original_ld['mtld'],
-            'across_input_mtld_all': all_adapted_ld['mtld'],
-            'across_input_mtld_first': first_adapted_ld['mtld'],
-        })
+        config_results.append(result_dict)
 
-        # === PER INPUT ===
-        print("Computing per-input lexical diversity (TTR, MTLD, HDD)...")
-
-        df['per_input_ld'] = df['adapted_texts'].apply(lambda texts: compute_ld_metrics(texts))
-
-        # Separar las métricas por tipo
-        df['per_input_ttr'] = df['per_input_ld'].apply(lambda d: d['ttr'])
-        df['per_input_mtld'] = df['per_input_ld'].apply(lambda d: d['mtld'])
-        df['per_input_hdd'] = df['per_input_ld'].apply(lambda d: d['hdd'])
-        result_dict.update({
-            'mean_per_input_ttr': df['per_input_ttr'].mean(),
-            'std_per_input_ttr': df['per_input_ttr'].std(),
-
-            'mean_per_input_mtld': df['per_input_mtld'].mean(),
-            'std_per_input_mtld': df['per_input_mtld'].std(),
-
-            'mean_per_input_hdd': df['per_input_hdd'].mean(),
-            'std_per_input_hdd': df['per_input_hdd'].std(),
-        })
-
-        
-    if vendi_score_computation:
-        print("Computing Vendi Score...")
-
-        # Compute the Vendi Score for all adaptations
-        all_adaptations_joined = " ".join(all_adaptations)
-        tokens = all_adaptations_joined.split()
-        ngram_vs = text_utils.ngram_vendi_score(tokens, ns=[1, 2])
-        result_dict.update({
-            'vendi_score_ngram_1_2': ngram_vs,
-        })
-
-    if compute_global_ingredient_diversity:
-        print("Computing global and local ingredient diversity...")
-
-
-        df['country'] = 'Spain'  # si no tienes una columna de país real
-
-        # === GLOBAL ORIGINAL ===
-        global_diversity_original = compute_global_diversity_from_column(df, column='original_ingredients', mode="original")
-        mean_global_div_original = np.mean([r['global'] for r in global_diversity_original])
-        result_dict.update({
-            'original_global_diversity': mean_global_div_original,
-        })
-
-        # === GLOBAL ADAPTED ===
-        global_diversity_stats = compute_global_diversity_from_column(df, column='Ingredientes_pr', mode="adapted")
-        mean_global_div = np.mean([r['global'] for r in global_diversity_stats])
-        result_dict.update({
-            'adapted_global_diversity': mean_global_div,
-        })
-
-        # === GLOBAL FIRST ADAPTATION ===
-        df['Ingredientes_pr_first'] = df['Ingredientes_pr'].apply(
-            lambda lista: lista[0] if isinstance(lista, list) and len(lista) > 0 else []
-        )
-        global_diversity_first = compute_global_diversity_from_column(df, column='Ingredientes_pr_first', mode="adapted_first")
-        mean_global_div_first = np.mean([r['global'] for r in global_diversity_first])
-        result_dict.update({
-            'adapted_global_diversity_first': mean_global_div_first,
-        })
-
-        df['mode'] = 'original'
-        # === LOCAL ORIGINAL ===
-        local_diversity_original = compute_local_diversity_from_column(df, column='original_ingredients', mode_label="original")
-        mean_local_div_original = np.mean([r['entropy'] for r in local_diversity_original])
-        result_dict.update({
-            'original_local_diversity': mean_local_div_original,
-        })
-
-        # === LOCAL ADAPTED ===
-        local_diversity_stats = compute_local_diversity_from_column(df, column='Ingredientes_pr', mode_label="adapted")
-        mean_local_div = np.mean([r['entropy'] for r in local_diversity_stats])
-        result_dict.update({
-            'adapted_local_diversity': mean_local_div,
-        })
-
-        # === LOCAL FIRST ADAPTATION ===
-        local_diversity_first = compute_local_diversity_from_column(df, column='Ingredientes_pr_first', mode_label="adapted_first")
-        mean_local_div_first = np.mean([r['entropy'] for r in local_diversity_first])
-        result_dict.update({
-            'adapted_local_diversity_first': mean_local_div_first,
-        })
-
-
-    if semantic_diversity_computation:
-        
-        print("Computing semantic diversity...")
-
-        # === Across-input semantic diversity ===
-        # Es decir, por receta: calcular la diversidad entre sus adaptaciones
-        def safe_semantic_diversity(texts):
-            return calc_avg_semantic_diversity(texts, model) if len(texts) > 1 else 0.0
-
-        df['semantic_diversity'] = df['adapted_texts'].apply(safe_semantic_diversity)
-        mean_across_input_semantic_div = df['semantic_diversity'].mean()
-
-        result_dict.update({
-            'mean_across_input_semantic_diversity': mean_across_input_semantic_div,
-        })
-
-        print(f"Mean across-input semantic diversity: {mean_across_input_semantic_div:.4f}")
-
-        
-
-
-    config_results.append(result_dict)
-
-# === Save results ===
-df_summary = pd.DataFrame(config_results)
-df_summary.to_csv('res/adaptation/diversity_results.csv', index=False)
-
+    # Save final results
+    df_summary = pd.DataFrame(config_results)
+    df_summary.to_csv(filename_results, index=False)
 
 # %%
