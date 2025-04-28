@@ -140,6 +140,23 @@ def syntactic_diversity(texts, n_values=[1, 2, 3]):
 #     return 1 - mean_similarity
 
 
+import nltk
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from joblib import Parallel, delayed
+import multiprocessing
+
+def self_bleu_single(i, texts, smoothie):
+    references = texts[:i] + texts[i+1:]
+    references = [nltk.word_tokenize(ref) for ref in references]
+    hypothesis = nltk.word_tokenize(texts[i])
+    return sentence_bleu(references, hypothesis, smoothing_function=smoothie)
+
+def compute_self_bleu_parallel(texts, n_jobs=38):
+    smoothie = SmoothingFunction().method4
+    results = Parallel(n_jobs=n_jobs, prefer="processes")(
+        delayed(self_bleu_single)(i, texts, smoothie) for i in range(len(texts))
+    )
+    return sum(results) / len(results)
 
 
 def compute_self_bleu(texts):

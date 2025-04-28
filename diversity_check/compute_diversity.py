@@ -4,6 +4,13 @@ import pandas as pd
 import json
 import ast
 import numpy as np
+import torch
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
 
 from metrics import clean_ingredients
 from diversity_metrics import (
@@ -11,6 +18,8 @@ from diversity_metrics import (
     calc_avg_semantic_diversity,
     compute_global_diversity_from_column,
     compute_input_diversity,
+    compute_self_bleu,
+    compute_self_bleu_parallel,
     lexical_diversity,
     msttr,
     syntactic_diversity,
@@ -69,40 +78,76 @@ def compute_lexical_diversity_metrics(df):
     }
     return metrics
 
+import numpy as np
+from scipy.spatial.distance import pdist
 def compute_semantic_diversity_metrics(df, original_recipes, model):
-    import numpy as np
-    from scipy.spatial.distance import pdist
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device.upper()}")
+    
     all_texts = set()
     for mods in df['adapted_texts']:
         all_texts.update(mods)
     all_texts.update(original_recipes)
     all_texts = list(all_texts)
     text2embedding = {}
-    batch_size = 16
+    batch_size = 4
     for i in range(0, len(all_texts), batch_size):
         batch = all_texts[i:i+batch_size]
-        embeddings = model.encode(batch, show_progress_bar=False, convert_to_numpy=True, device='cpu')
+        embeddings = model.encode(batch, show_progress_bar=False, convert_to_numpy=True, device=device)
         for t, emb in zip(batch, embeddings):
             text2embedding[t] = emb
     print("Text embeddings computed!")
+
     def avg_cosine_distance(texts):
         if len(texts) < 2:
             return 0.0
         vecs = np.stack([text2embedding[t] for t in texts])
         dists = pdist(vecs, metric="cosine")
         return float(np.mean(dists))
+    
+    # Per-input (average over inputs, each is K generations)
     df['per_input_semantic_diversity'] = df['adapted_texts'].apply(avg_cosine_distance)
     per_input_semdiv_mean = df['per_input_semantic_diversity'].mean()
     per_input_semdiv_std = df['per_input_semantic_diversity'].std()
+    print("Cosine distances computed!")
+
+
     first_adaptations = [mods[0] for mods in df['adapted_texts'] if mods]
-    across_input_adapted_semdiv = avg_cosine_distance(first_adaptations)
+    across_input_adapted_semdiv = avg_cosine_distance(first_adaptations)  # semantic
+    print("Across input semantic diversity computed!")
+
+
     across_input_original_semdiv = avg_cosine_distance(original_recipes)
+    print("Across input original semantic diversity computed!")
+
+    df['per_input_self_bleu'] = df['adapted_texts'].apply(
+        lambda ts: compute_self_bleu(ts) if len(ts) > 1 else None)
+    per_input_self_bleu_mean = df['per_input_self_bleu'].mean()
+    per_input_self_bleu_std = df['per_input_self_bleu'].std()
+    print("Per input Self-bleu values computed!")
+
+    across_input_original_self_bleu = compute_self_bleu_parallel(original_recipes) if len(original_recipes) > 1 else None
+    print("Across input original Self-bleu values computed!")
+    # Don't include "all_adapted_texts" for across-input: it's not in the paper's formulation
+
+    across_input_adapted_self_bleu = compute_self_bleu_parallel(first_adaptations) if len(first_adaptations) > 1 else None
+    print("Across input Self-bleu values computed!")
     return {
         'per_input_adapted_semdiv_mean': per_input_semdiv_mean,
         'per_input_adapted_semdiv_std': per_input_semdiv_std,
         'across_input_adapted_semdiv': across_input_adapted_semdiv,
         'across_input_original_semdiv': across_input_original_semdiv,
+        'per_input_self_bleu_mean': per_input_self_bleu_mean,
+        'per_input_self_bleu_std': per_input_self_bleu_std,
+        'across_input_adapted_self_bleu': across_input_adapted_self_bleu,
+        'across_input_original_self_bleu': across_input_original_self_bleu,
     }
+
+
 
 def compute_ingredient_diversity_metrics(df):
     metrics = {}
@@ -159,10 +204,11 @@ def compute_ingredient_diversity_metrics(df):
 # ------------------------------------------------------------------------------------
 #%%
 # ========== MAIN SCRIPT ==========
-diversity_computation = {'LEXICAL': False, 'SEMANTIC': False, 'SYNTACTIC': False, 'INGREDIENT': True}
+diversity_computation = {'LEXICAL': False, 'SEMANTIC': True, 'SYNTACTIC': False, 'INGREDIENT': False}
 for diversity_type in diversity_computation:
     print(f"Computing {diversity_type} diversity...")
     filename_results = f'res/adaptation/diversity_results_{diversity_type.lower()}.csv'
+    filename_partial_results = f'res/adaptation/diversity_partial_results_{diversity_type.lower()}.csv'
 
     if not diversity_computation[diversity_type]:
         print(f"[Skipping {diversity_type} diversity computation]")
@@ -183,7 +229,7 @@ for diversity_type in diversity_computation:
 
     config_results = []
 
-    for iteration, param_config in enumerate(param_configs[1:3]):
+    for iteration, param_config in enumerate(param_configs):
         print(f"***Current configuration: {param_config}")
 
         # we need to save the config for posterior evaluation analysis
@@ -248,6 +294,11 @@ for diversity_type in diversity_computation:
             }
 
         config_results.append(result_dict)
+
+        # save intermediate results
+        df_intermediate = pd.DataFrame(config_results)
+        df_intermediate.to_csv(''+filename_partial_results, index=False)
+        print(f"Results saved to {filename_partial_results}")
 
     # Save final results
     df_summary = pd.DataFrame(config_results)
